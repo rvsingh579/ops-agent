@@ -1,0 +1,23 @@
+# Domain configuration — defines the vocabulary for one operational domain.
+# This is what makes the pipeline "swap the domain, not the code": point this
+# file at a different asset/sensor set and Phases 2-4 keep working unchanged.
+#
+# Filled in incrementally as we build, not all at once:
+#   - asset/id/time fields: known now
+#   - operational_settings / sensors: filled in Checkpoint 1, after we've
+#     actually looked at the raw CMAPSS columns
+#   - fault_types: filled in during Phase 2 (Diagnosis Agent knowledge base)
+
+domain:
+  name: turbofan_engine
+  description: "NASA CMAPSS turbofan engine degradation simulation"
+
+asset:
+  id_column: unit_number # identifies one engine unit
+  time_column: time_cycles # the time axis within one engine's life
+
+operational_settings: [] # TODO (Checkpoint 1): op_setting_1, op_setting_2, op_setting_3
+
+sensors: [] # TODO (Checkpoint 1): sensor_1 ... sensor_21, human-readable labels
+
+fault_types: [] # TODO (Phase 2): populated for the Diagnosis Agent
