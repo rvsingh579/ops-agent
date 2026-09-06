@@ -2,22 +2,133 @@
 # This is what makes the pipeline "swap the domain, not the code": point this
 # file at a different asset/sensor set and Phases 2-4 keep working unchanged.
 #
-# Filled in incrementally as we build, not all at once:
-#   - asset/id/time fields: known now
-#   - operational_settings / sensors: filled in Checkpoint 1, after we've
-#     actually looked at the raw CMAPSS columns
-#   - fault_types: filled in during Phase 2 (Diagnosis Agent knowledge base)
+# Source of the sensor table: Saxena et al., "Damage Propagation Modeling for
+# Aircraft Engine Run-to-Failure Simulation" (PHM08), Table 2. The dataset's
+# own readme.txt mislabels this as 26 sensors — there are 21 (cols 6-26);
+# columns 1-5 are unit_number, time_cycles, and the 3 operational settings.
+#
+# fault_types stays empty until Phase 2 (Diagnosis Agent knowledge base).
 
 domain:
   name: turbofan_engine
-  description: "NASA CMAPSS turbofan engine degradation simulation"
+  description: "NASA CMAPSS turbofan engine degradation simulation (FD001 subset: 1 operating condition, 1 fault mode - HPC degradation)"
 
 asset:
   id_column: unit_number # identifies one engine unit
   time_column: time_cycles # the time axis within one engine's life
 
-operational_settings: [] # TODO (Checkpoint 1): op_setting_1, op_setting_2, op_setting_3
+operational_settings:
+  - name: op_setting_1 # std=0.0022 in FD001 - real (small) noise, kept
+  - name: op_setting_2 # std=0.00029 in FD001 - real (small) noise, kept
+  - name: op_setting_3
+    informative: false
+    exclude_reason: "constant at 100.0 across all rows in FD001 (std=0) - pinned throttle-type setpoint under this fixed operating condition"
+  # FD001 uses a single operating condition (sea level), so these vary only
+  # slightly around a fixed point here (op_setting_3 doesn't vary at all).
+  # They vary meaningfully across 6 regimes in FD002/FD004 - not relevant
+  # unless we extend beyond FD001.
 
-sensors: [] # TODO (Checkpoint 1): sensor_1 ... sensor_21, human-readable labels
+sensors:
+  - name: sensor_1
+    symbol: T2
+    description: Total temperature at fan inlet
+    unit: degR
+    informative: false
+    exclude_reason: "constant across all rows (std=0) in FD001 - fixed ambient temp, single operating condition"
+  - name: sensor_2
+    symbol: T24
+    description: Total temperature at LPC outlet
+    unit: degR
+  - name: sensor_3
+    symbol: T30
+    description: Total temperature at HPC outlet
+    unit: degR
+  - name: sensor_4
+    symbol: T50
+    description: Total temperature at LPT outlet
+    unit: degR
+  - name: sensor_5
+    symbol: P2
+    description: Pressure at fan inlet
+    unit: psia
+    informative: false
+    exclude_reason: "constant across all rows (std=0) in FD001 - fixed ambient pressure, single operating condition"
+  - name: sensor_6
+    symbol: P15
+    description: Total pressure in bypass-duct
+    unit: psia
+  - name: sensor_7
+    symbol: P30
+    description: Total pressure at HPC outlet
+    unit: psia
+  - name: sensor_8
+    symbol: Nf
+    description: Physical fan speed
+    unit: rpm
+  - name: sensor_9
+    symbol: Nc
+    description: Physical core speed
+    unit: rpm
+  - name: sensor_10
+    symbol: epr
+    description: Engine pressure ratio (P50/P2)
+    unit: "-"
+    informative: false
+    exclude_reason: "constant across all rows (std=0) in FD001 - pinned under this fixed operating condition"
+  - name: sensor_11
+    symbol: Ps30
+    description: Static pressure at HPC outlet
+    unit: psia
+  - name: sensor_12
+    symbol: phi
+    description: Ratio of fuel flow to Ps30
+    unit: pps/psi
+  - name: sensor_13
+    symbol: NRf
+    description: Corrected fan speed
+    unit: rpm
+  - name: sensor_14
+    symbol: NRc
+    description: Corrected core speed
+    unit: rpm
+  - name: sensor_15
+    symbol: BPR
+    description: Bypass ratio
+    unit: "-"
+  - name: sensor_16
+    symbol: farB
+    description: Burner fuel-air ratio
+    unit: "-"
+    informative: false
+    exclude_reason: "constant across all rows (std~=0, float noise) in FD001"
+  - name: sensor_17
+    symbol: htBleed
+    description: Bleed enthalpy
+    unit: "-"
+  - name: sensor_18
+    symbol: Nf_dmd
+    description: Demanded fan speed
+    unit: rpm
+    informative: false
+    exclude_reason: "constant across all rows (std=0) in FD001 - a controller setpoint, not a measured response; fixed under one throttle condition"
+  - name: sensor_19
+    symbol: PCNfR_dmd
+    description: Demanded corrected fan speed
+    unit: rpm
+    informative: false
+    exclude_reason: "constant across all rows (std=0) in FD001 - a controller setpoint, not a measured response; fixed under one throttle condition"
+  - name: sensor_20
+    symbol: W31
+    description: HPT coolant bleed
+    unit: lbm/s
+  - name: sensor_21
+    symbol: W32
+    description: LPT coolant bleed
+    unit: lbm/s
+  # sensor_6 (P15) was borderline (std=1.4e-3) but kept: that's orders of
+  # magnitude above the ~1e-15/1e-18 floating-point noise seen on the sensors
+  # marked informative: false above, so it's real (if small) signal, not noise.
+  # Verified empirically on train_FD001.txt during Checkpoint 1 exploration -
+  # not assumed from any published list.
 
 fault_types: [] # TODO (Phase 2): populated for the Diagnosis Agent
