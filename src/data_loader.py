@@ -104,10 +104,10 @@ def load_and_prepare(filepath, domain_config, stats=None):
 
     normalized_df = apply_normalization(df, feature_columns, stats)
 
-    return normalized_df, stats
+    return normalized_df, stats, feature_columns
 
 if __name__ == "__main__":
     domain_config = load_domain_config()
     filepath = "/Users/raviranjan/Documents/mera_kaam/ops-agent/data/raw/train_FD001.txt"
-    normalized_df, stats = load_and_prepare(filepath, domain_config)
+    normalized_df, stats, feature_columns = load_and_prepare(filepath, domain_config)
     print(normalized_df.head())
