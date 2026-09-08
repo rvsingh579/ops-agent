@@ -86,6 +86,27 @@ def apply_normalization(df, feature_columns, stats) -> pd.DataFrame:
 
     return df_normalized
 
+def load_cleaned_data(filepath=None, domain_config=None) -> pd.DataFrame:
+    """Load + clean CMAPSS data WITHOUT normalizing it.
+
+    Unlike load_and_prepare (which returns z-scored values for the anomaly
+    detector), this returns real-unit sensor readings - for anything meant
+    to be read by a human, like the Data Retrieval tool.
+    """
+    if domain_config is None:
+        domain_config = load_domain_config()
+    if filepath is None:
+        filepath = (
+            Path(__file__).resolve().parent.parent
+            / "data"
+            / "raw"
+            / "train_FD001.txt"
+        )
+    df = load_raw_cmapss(filepath, domain_config)
+    df = clean(df, domain_config)
+    return df
+
+
 def load_and_prepare(filepath, domain_config, stats=None):
 
     df = load_raw_cmapss(filepath, domain_config)

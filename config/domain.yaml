@@ -131,4 +131,39 @@ sensors:
   # Verified empirically on train_FD001.txt during Checkpoint 1 exploration -
   # not assumed from any published list.
 
-fault_types: [] # TODO (Phase 2): populated for the Diagnosis Agent
+fault_types:
+  # Each description is the actual text that gets embedded and searched via
+  # FAISS - written to mention specific sensor symbols so semantic retrieval
+  # has real signal to match against the anomaly report's contributing
+  # sensors. Grounded in Saxena et al. (PHM08), not invented.
+  - name: hpc_degradation
+    label: "High-Pressure Compressor (HPC) Degradation"
+    description: >
+      High-Pressure Compressor (HPC) degradation: gradual loss of compressor
+      efficiency and airflow capacity. Typically manifests as rising T30
+      (HPC outlet temperature) and T50 (LPT outlet temperature) as the
+      compressor works harder to maintain pressure ratio, increasing
+      corrected core speed (NRc) and static pressure at HPC outlet (Ps30),
+      with declining HPC stall margin. This is the dominant fault mode in
+      single-operating-condition run-to-failure data such as FD001.
+
+  - name: fan_degradation
+    label: "Fan Degradation"
+    description: >
+      Fan degradation: loss of efficiency and flow capacity in the engine's
+      fan stage. Typically manifests as changes in physical and corrected
+      fan speed (Nf, NRf) and bypass ratio (BPR), with comparatively smaller
+      HPC-outlet temperature (T30/T50) response than HPC-driven faults.
+      Affects thrust generation more directly than core-engine faults.
+      Present alongside HPC degradation in multi-fault-mode datasets such
+      as FD003/FD004.
+
+  - name: sensor_instrumentation_anomaly
+    label: "Sensor/Instrumentation Anomaly (non-fault)"
+    description: >
+      Sensor or instrumentation anomaly: an isolated, non-physical anomaly
+      caused by measurement noise, a faulty sensor, or a transient data
+      artifact rather than genuine mechanical degradation. Typically
+      manifests as a brief spike or dropout in a single sensor without a
+      corresponding, physically consistent change across related sensors,
+      and does not persist or worsen over subsequent cycles.

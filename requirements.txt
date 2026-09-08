@@ -4,3 +4,6 @@ scikit-learn
 pyyaml
 pytest
 langchain-core
+langchain-ollama
+langchain-community
+faiss-cpu
