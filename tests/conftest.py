@@ -48,6 +48,96 @@ def domain_config_stub():
 
 
 @pytest.fixture
+def tool_domain_config_stub():
+    """Like domain_config_stub, but with the richer fields the tools/ layer
+    needs (sensor symbol/description/unit, fault_types) - kept as a SEPARATE
+    fixture rather than bolting these onto domain_config_stub, since that
+    one is scoped to data_loader.py's own tests and doesn't need them.
+    """
+    return {
+        "asset": {"id_column": "unit_number", "time_column": "time_cycles"},
+        "operational_settings": [
+            {"name": "op_setting_1"},
+        ],
+        "sensors": [
+            {
+                "name": "sensor_8",
+                "symbol": "Nf",
+                "description": "Physical fan speed",
+                "unit": "rpm",
+            },
+            {
+                "name": "sensor_3",
+                "symbol": "T30",
+                "description": "HPC outlet temperature",
+                "unit": "degR",
+            },
+        ],
+        "fault_types": [
+            {
+                "name": "fan_degradation",
+                "label": "Fan Degradation",
+                "description": "Fan degradation stub: Nf, NRf, BPR affected.",
+            },
+            {
+                "name": "hpc_degradation",
+                "label": "HPC Degradation",
+                "description": "HPC degradation stub: T30, T50, NRc affected.",
+            },
+        ],
+    }
+
+
+class FakeChatResponse:
+    """Mimics the .content attribute on LangChain's AIMessage, without
+    needing a real ChatOllama/Ollama server to produce one."""
+
+    def __init__(self, content):
+        self.content = content
+
+
+class FakeChatModel:
+    """Drop-in replacement for ChatOllama in tests: same .invoke(prompt)
+    interface, returns a fixed response instantly. Stores the prompt it was
+    called with, so a test can assert on what was actually sent to the
+    "model" without needing the real model to respond well - or at all.
+    """
+
+    def __init__(self, content="fake LLM response"):
+        self.content = content
+        self.last_prompt = None
+        self.call_count = 0
+
+    def invoke(self, prompt):
+        self.last_prompt = prompt
+        self.call_count += 1
+        return FakeChatResponse(self.content)
+
+
+class RaisingChatModel:
+    """A fake LLM that raises if invoked at all - use this to PROVE a code
+    path never calls the LLM (e.g. an error-passthrough guard), rather than
+    just hoping the assertion would have caught a stray call.
+    """
+
+    def invoke(self, prompt):
+        raise AssertionError(
+            "LLM was called when it should have been skipped entirely "
+            "(e.g. an error-passthrough guard didn't short-circuit)."
+        )
+
+
+@pytest.fixture
+def fake_llm():
+    return FakeChatModel()
+
+
+@pytest.fixture
+def raising_llm():
+    return RaisingChatModel()
+
+
+@pytest.fixture
 def raw_df_stub():
     """Small synthetic raw dataframe matching domain_config_stub's columns.
 
