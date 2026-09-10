@@ -7,3 +7,4 @@ langchain-core
 langchain-ollama
 langchain-community
 faiss-cpu
+langchain

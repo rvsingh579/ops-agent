@@ -75,17 +75,19 @@ def test_retrieve_fault_context_discriminates_fan_vs_hpc():
     assert "Fan Degradation" in result
 
 
-# --- diagnose(): mocked LLM, isolated from the real (slow) chat model ---
+# --- diagnose(): mocked LLM, isolated from the real (slow) chat model.
+# detect_anomalies is mocked with a two-argument lambda now - unit/cycles,
+# matching its real signature, not a single query string. ---
 
 
 def test_diagnose_returns_error_passthrough_without_calling_llm(monkeypatch, raising_llm):
     monkeypatch.setattr(
         "src.tools.diagnosis_tool.detect_anomalies",
-        lambda query: "Unit 999 does not exist. Valid unit numbers range from 1 to 100.",
+        lambda unit, cycles="last 20": "Unit 999 does not exist. Valid unit numbers range from 1 to 100.",
     )
     monkeypatch.setattr("src.tools.diagnosis_tool._get_cached_llm", lambda: raising_llm)
 
-    result = diagnose("unit: 999")
+    result = diagnose(999)
 
     assert result == "Unit 999 does not exist. Valid unit numbers range from 1 to 100."
 
@@ -99,10 +101,13 @@ def test_diagnose_builds_prompt_with_anomaly_and_context(monkeypatch, fake_llm):
         "Top contributing sensors at most recent cycle:\n"
         "  sensor_8 (Nf, Physical fan speed): z-score=3.146\n"
     )
-    monkeypatch.setattr("src.tools.diagnosis_tool.detect_anomalies", lambda query: fake_report)
+    monkeypatch.setattr(
+        "src.tools.diagnosis_tool.detect_anomalies",
+        lambda unit, cycles="last 20": fake_report,
+    )
     monkeypatch.setattr("src.tools.diagnosis_tool._get_cached_llm", lambda: fake_llm)
 
-    result = diagnose("unit: 1, cycles: last 20")
+    result = diagnose(1, "last 20")
 
     assert result == fake_llm.content
     assert fake_report in fake_llm.last_prompt
@@ -114,11 +119,14 @@ def test_diagnose_builds_prompt_with_anomaly_and_context(monkeypatch, fake_llm):
 def test_diagnosis_tool_invoke_matches_diagnose(monkeypatch, fake_llm):
     monkeypatch.setattr(
         "src.tools.diagnosis_tool.detect_anomalies",
-        lambda query: "anomaly_score: mean=0.05\nTop contributing sensors:\n  sensor_8 (Nf, Physical fan speed): z-score=3.0",
+        lambda unit, cycles="last 20": (
+            "anomaly_score: mean=0.05\nTop contributing sensors:\n"
+            "  sensor_8 (Nf, Physical fan speed): z-score=3.0"
+        ),
     )
     monkeypatch.setattr("src.tools.diagnosis_tool._get_cached_llm", lambda: fake_llm)
 
-    result = diagnosis_tool.invoke("unit: 1, cycles: last 20")
+    result = diagnosis_tool.invoke({"unit": 1, "cycles": "last 20"})
 
     assert result == fake_llm.content
 
@@ -128,6 +136,6 @@ def test_diagnosis_tool_invoke_matches_diagnose(monkeypatch, fake_llm):
 
 @pytest.mark.slow
 def test_diagnose_real_end_to_end_identifies_fan_degradation():
-    result = diagnose("unit: 1, cycles: last 20")
+    result = diagnose(1, "last 20")
 
     assert "fan degradation" in result.lower()

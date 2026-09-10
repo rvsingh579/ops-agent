@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 
 from src.anomaly_detector import fit_isolation_forest, get_top_contributing_sensors, score_anomalies
 from src.data_loader import load_and_prepare, load_domain_config
-from src.tools.data_retrieval_tool import parse_query, resolve_cycle_range
+from src.tools.data_retrieval_tool import resolve_cycle_range
 
 FILEPATH = Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "train_FD001.txt"
 
@@ -80,15 +80,7 @@ def _get_cached_scores():
     return _CACHE["scored_df"], _CACHE["domain_config"], _CACHE["feature_columns"]
 
 
-def detect_anomalies(query: str) -> str:
-    # 1. Parse the query - same format, same parser, as data_retrieval_tool
-    parsed = parse_query(query)
-
-    if "error" in parsed:
-        return parsed["error"]
-
-    unit_number = parsed["unit_number"]
-    cycles_spec = parsed["cycles_spec"]
+def detect_anomalies(unit: int, cycles: str = "last 20") -> str:
 
     # 2. Load (cached) scored dataframe + config + feature columns
     scored_df, domain_config, feature_columns = _get_cached_scores()
@@ -97,12 +89,12 @@ def detect_anomalies(query: str) -> str:
     id_column = domain_config["asset"]["id_column"]
     time_column = domain_config["asset"]["time_column"]
 
-    unit_df = scored_df[scored_df[id_column] == unit_number]
+    unit_df = scored_df[scored_df[id_column] == unit]
 
     if unit_df.empty:
         valid_units = sorted(scored_df[id_column].unique())
         return (
-            f"Unit {unit_number} does not exist. "
+            f"Unit {unit} does not exist. "
             f"Valid unit numbers range from "
             f"{min(valid_units)} to {max(valid_units)}."
         )
@@ -111,12 +103,12 @@ def detect_anomalies(query: str) -> str:
     available_cycles = sorted(unit_df[time_column].unique())
 
     # 5. Resolve requested cycle specification into an explicit cycle list
-    resolved_cycles = resolve_cycle_range(cycles_spec, available_cycles)
+    resolved_cycles = resolve_cycle_range(cycles, available_cycles)
 
     if not resolved_cycles:
         return (
-            f"No matching cycles for unit {unit_number} with request "
-            f"'{cycles_spec}'. This unit's cycles range from "
+            f"No matching cycles for unit {unit} with request "
+            f"'{cycles}'. This unit's cycles range from "
             f"{available_cycles[0]} to {available_cycles[-1]}."
         )
 
@@ -127,33 +119,33 @@ def detect_anomalies(query: str) -> str:
     return summarize_anomalies(df_subset, domain_config, feature_columns)
 
 
-@tool
-def anomaly_detection_tool(query: str) -> str:
+@tool(parse_docstring=True)
+def anomaly_detection_tool(unit: int, cycles: str = "last 20") -> str:
     """Runs Isolation Forest anomaly detection for a specific turbofan
     engine unit and reports whether its recent readings look abnormal.
     Use this when the user asks if something is wrong, unusual, or
-    abnormal with a specific engine - typically after data_retrieval_tool,
-    or instead of it if the user directly asks about anomalies.
+    abnormal with a specific engine.
 
-    Input format: 'unit: <id>, cycles: <spec>' where <spec> is 'last N',
-    'A-B', a single cycle number, or 'all'. Example: 'unit: 14, cycles:
-    last 20'. If cycles is omitted, defaults to the last 20.
+    Args:
+        unit: The engine unit number (1-100 for the FD001 dataset).
+        cycles: Which cycles to check - 'last N' (e.g. 'last 20'), a
+            range 'A-B' (e.g. '10-15'), a single cycle number, or 'all'.
     """
-    return detect_anomalies(query)
+    return detect_anomalies(unit, cycles)
 
 
 if __name__ == "__main__":
     print("=== detect_anomalies (real dataset) ===")
-    for q in [
-        "unit: 1, cycles: last 100",   # unit 1 fails at cycle 192 - expect high flag rate
-        "unit: 1, cycles: 1-20",      # unit 1's early life - expect low/no flags
-        "unit: 500",                  # nonexistent unit
-        "unit: 1, cycles: 9999",      # nonexistent cycle for a real unit
+    for unit, cycles in [
+        (1, "last 100"),
+        (1, "1-20"),
+        (500, "last 20"),
+        (1, "9999"),
     ]:
-        print(f"--- query: {q!r} ---")
-        print(detect_anomalies(q))
+        print(f"--- unit={unit!r}, cycles={cycles!r} ---")
+        print(detect_anomalies(unit, cycles))
         print()
 
     print("=== anomaly_detection_tool (the actual LangChain Tool) ===")
     print("name:", anomaly_detection_tool.name)
-    print(anomaly_detection_tool.invoke("unit: 1, cycles: last 20"))
+    print(anomaly_detection_tool.invoke({"unit": 1, "cycles": "last 20"}))
