@@ -135,7 +135,7 @@ def _get_cached_llm():
 
     if _LLM_CACHE is None:
         _LLM_CACHE = ChatOllama(
-            model="llama3.2",
+            model="llama3.1:8b",
             base_url="http://localhost:11434",
             verbose=True,
             temperature=0.0,
@@ -144,12 +144,8 @@ def _get_cached_llm():
 
     return _LLM_CACHE
 
-def diagnose(query: str) -> str:
-    # detect_anomalies() already calls parse_query() internally and returns
-    # its error message directly if parsing fails - that error string never
-    # contains "anomaly_score", so the guard below catches every failure
-    # path (bad query, nonexistent unit, nonexistent cycles) in one place.
-    anomaly_report = detect_anomalies(query)
+def diagnose(unit: int, cycles: str = "last 20") -> str:
+    anomaly_report = detect_anomalies(unit, cycles)
     if "anomaly_score" not in anomaly_report:
         return anomaly_report
     vector_store = _get_cached_vector_store()
@@ -159,26 +155,22 @@ def diagnose(query: str) -> str:
     response = llm.invoke(prompt)
     return response.content
 
-@tool
-def diagnosis_tool(query: str) -> str:
+@tool(parse_docstring=True)
+def diagnosis_tool(unit: int, cycles: str = "last 20") -> str:
     """Identifies probable root cause(s) for a specific engine's anomaly,
     ranked by likelihood, using retrieved fault knowledge. Use this after
     anomaly_detection_tool confirms something looks abnormal, or when the
     user asks WHY something is happening.
 
-    Input format: same as the other tools - 'unit: <id>, cycles: <spec>'.
+    Args:
+        unit: The engine unit number (1-100 for the FD001 dataset).
+        cycles: Which cycles to diagnose - 'last N' (e.g. 'last 20'), a
+            range 'A-B' (e.g. '10-15'), a single cycle number, or 'all'.
     """
-    return diagnose(query)
+    return diagnose(unit, cycles)
 
 
 if __name__ == "__main__":
-    # The two _CACHE variables start as None/empty on purpose - that's the
-    # same lazy-loading pattern as every other tool in this project. There
-    # is nothing to "set up" by hand: the first call to
-    # _get_cached_vector_store() builds the FAISS index (embedding all 3
-    # fault documents), and the first call to _get_cached_llm() constructs
-    # the chat model wrapper. Both then stay cached for the rest of this
-    # process. Watch the cache variables flip from None to populated below.
 
     print("=== Step 1: build_fault_documents (no embedding yet, just text) ===")
     domain_config = load_domain_config()
@@ -210,12 +202,12 @@ if __name__ == "__main__":
 
     print()
     print("=== Step 4: error passthrough - should be instant, no LLM call ===")
-    print(diagnose("unit: 500"))
+    print(diagnose(500))
 
     print()
     print("=== Step 5: full diagnose() on real data - this one is slow (LLM call) ===")
     print("unit 1's last 100 cycles are near its actual failure at cycle 192...")
-    print(diagnose("unit: 1, cycles: last 100"))
+    print(diagnose(1, "last 100"))
 
     print()
     print("=== Step 6: the actual LangChain Tool ===")

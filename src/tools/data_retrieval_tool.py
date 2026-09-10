@@ -4,48 +4,6 @@ from langchain_core.tools import tool
 
 from src.data_loader import load_cleaned_data, load_domain_config
 
-
-def parse_query(query: str) -> dict:
-    """
-    Parses a query string into a dictionary of key-value pairs.
-
-    Args:
-        query (str): The query string to parse.
-
-    Returns:
-        dict: A dictionary containing the parsed key-value pairs.
-    """
-    unit_match = re.search(
-        r"unit\D{0,10}(\d+)",
-        query,
-        flags=re.IGNORECASE
-    )
-
-    if not unit_match:
-        return {
-            "error": "Could not find a unit number in the query."
-        }
-
-    unit_number = int(unit_match.group(1))
-
-    # Extract cycles specification
-    cycles_match = re.search(
-        r"cycles?\s*:?\s*(.*)",
-        query,
-        flags=re.IGNORECASE
-    )
-
-    if cycles_match:
-        cycles_spec = cycles_match.group(1).strip()
-    else:
-        cycles_spec = "last 20"
-
-    return {
-        "unit_number": unit_number,
-        "cycles_spec": cycles_spec
-    }
-
-
 def resolve_cycle_range(cycles_spec: str, available_cycles: list[int]) -> list[int]:
     """
     Resolves a cycle specification into a list of cycle numbers.
@@ -187,30 +145,20 @@ def _get_cached_data():
     return _CACHE["df"], _CACHE["domain_config"], _CACHE["feature_columns"]
 
 
-def retrieve_data(query: str) -> str:
-    # 1. Parse the query
-    parsed = parse_query(query)
+def retrieve_data(unit: int, cycles: str = "last 20") -> str:
 
-    if "error" in parsed:
-        return parsed["error"]
-
-    unit_number = parsed["unit_number"]
-    cycles_spec = parsed["cycles_spec"]
-
-    # 2. Load (cached) cleaned dataframe + config + feature columns
     df, domain_config, feature_columns = _get_cached_data()
 
-    # 3. Check whether requested unit exists
     id_column = domain_config["asset"]["id_column"]
     time_column = domain_config["asset"]["time_column"]
 
-    unit_df = df[df[id_column] == unit_number]
+    unit_df = df[df[id_column] == unit]
 
     if unit_df.empty:
         valid_units = sorted(df[id_column].unique())
 
         return (
-            f"Unit {unit_number} does not exist. "
+            f"Unit {unit} does not exist. "
             f"Valid unit numbers range from "
             f"{min(valid_units)} to {max(valid_units)}."
         )
@@ -222,14 +170,14 @@ def retrieve_data(query: str) -> str:
 
     # 5. Resolve requested cycle specification into an explicit cycle list
     resolved_cycles = resolve_cycle_range(
-        cycles_spec,
+        cycles,
         available_cycles
     )
 
     if not resolved_cycles:
         return (
-            f"No matching cycles for unit {unit_number} with request "
-            f"'{cycles_spec}'. This unit's cycles range from "
+            f"No matching cycles for unit {unit} with request "
+            f"'{cycles}'. This unit's cycles range from "
             f"{available_cycles[0]} to {available_cycles[-1]}."
         )
 
@@ -243,31 +191,20 @@ def retrieve_data(query: str) -> str:
         feature_columns
     )
 
-
-@tool
-def data_retrieval_tool(query: str) -> str:
+@tool(parse_docstring=True)
+def data_retrieval_tool(unit: int, cycles: str = "last 20") -> str:
     """Retrieves recent sensor readings and summary statistics for a
-    specific turbofan engine unit. Use this first whenever the user asks
-    about a specific engine's status, history, or recent behavior.
+    specific turbofan engine unit.
 
-    Input format: 'unit: <id>, cycles: <spec>' where <spec> is 'last N',
-    'A-B', a single cycle number, or 'all'. Example: 'unit: 14, cycles:
-    last 20'. If cycles is omitted, defaults to the last 20.
+    Args:
+        unit: The engine unit number (1-100 for the FD001 dataset).
+        cycles: Which cycles to retrieve - 'last N' (e.g. 'last 20'), a
+            range 'A-B' (e.g. '10-15'), a single cycle number, or 'all'.
     """
-    return retrieve_data(query)
+    return retrieve_data(unit, cycles)
 
 
 if __name__ == "__main__":
-    print("=== parse_query ===")
-    for q in [
-        "unit: 3, cycles: 10-15",
-        "unit: 1, cycles: last 5",
-        "unit 9",
-        "engine number seven",
-    ]:
-        print(repr(q), "->", parse_query(q))
-
-    print()
     print("=== resolve_cycle_range (against a 1..21 pool) ===")
     pool = list(range(1, 22))
     for spec in ["10-15", "last 5", "all", "75", "not a real spec"]:
@@ -275,18 +212,24 @@ if __name__ == "__main__":
 
     print()
     print("=== retrieve_data (real dataset) ===")
-    for q in [
-        "unit: 1, cycles: last 5",       # unit 1 fails at cycle 192
-        "unit: 3, cycles: 10-15",
-        "unit: 500",                      # nonexistent unit
-        "unit: 1, cycles: 9999",          # nonexistent cycle for a real unit
-        "engine number seven",            # unparseable - no 'unit' keyword
+    for unit, cycles in [
+        (1, "last 5"),      # unit 1 fails at cycle 192
+        (3, "10-15"),
+        (500, "last 20"),   # nonexistent unit
+        (1, "9999"),        # nonexistent cycle for a real unit
     ]:
-        print(f"--- query: {q!r} ---")
-        print(retrieve_data(q))
+        print(f"--- unit={unit!r}, cycles={cycles!r} ---")
+        print(retrieve_data(unit, cycles))
         print()
 
     print("=== data_retrieval_tool (the actual LangChain Tool) ===")
     print("name:", data_retrieval_tool.name)
-    print("description:", data_retrieval_tool.description)
-    print(data_retrieval_tool.invoke("unit: 1, cycles: last 1000"))
+    print("args schema:", data_retrieval_tool.args)
+    print(data_retrieval_tool.invoke({"unit": 1, "cycles": "last 1000"}))
+
+    print()
+    print("=== what a malformed model tool-call actually looks like now ===")
+    try:
+        data_retrieval_tool.invoke({"unit": "engine number seven"})
+    except Exception as e:
+        print(f"{type(e).__name__}: {e}")

@@ -63,20 +63,29 @@ error the moment it would occur.
 
 ## Phase 2 — Tools
 
-**All four tools share one input contract: `"unit: <id>, cycles: <spec>"`.**
-This is a LangChain agent design choice, not an accident: the orchestrator
-LLM is the one writing tool inputs, and small local models are worse at
-faithfully reproducing long free-text between calls than at repeating one
-short, consistent format. One format also means later tools can reuse
-earlier tools' parsing (`parse_query`, `resolve_cycle_range`) instead of
-re-implementing it.
+**All four tools share one input contract: separate `unit: int` /
+`cycles: str` parameters.** (Revised from the original design - see the
+Phase 3 note below on why.) Originally this was a single merged string
+(`"unit: <id>, cycles: <spec>"`, parsed by a hand-written `parse_query`
+regex) - the right call for a free-text ReAct agent, where the LLM's only
+job is producing a sensible string and our own code does the parsing.
+Redesigned once Phase 3 revealed `create_agent` uses *native* tool
+calling: the model kept trying to decompose the merged string into
+separate `unit`/`cycles` keys no matter how the prompt was worded, since
+native calling expects a real argument schema, not free text for us to
+parse ourselves. `parse_query` was deleted entirely - the framework
+extracts typed arguments per each tool's schema now.
+`resolve_cycle_range` (interpreting `"last 20"` vs `"10-15"` vs a bare
+number) is unchanged either way - that's domain logic, not something the
+calling convention affects.
 
 **Tools re-fetch shared data themselves rather than relying on the LLM to
 forward it between calls.**
-E.g. `diagnosis_tool` re-calls `detect_anomalies(query)` internally instead
-of expecting the orchestrator to paste the previous tool's output back in
-as input. Minimizes what has to survive as fragile natural-language text
-through the LLM's own context - the data layer is shared directly instead.
+E.g. `diagnosis_tool` re-calls `detect_anomalies(unit, cycles)` internally
+instead of expecting the orchestrator to paste the previous tool's output
+back in as input. Minimizes what has to survive as fragile natural-language
+text through the LLM's own context - the data layer is shared directly
+instead.
 
 **Each tool validates success/failure by checking a deterministic function's
 output for a known marker (e.g. `"anomaly_score" in result`), never by
@@ -93,8 +102,7 @@ general reasoning a capable instruct model already has. Reaching for RAG
 everywhere "because this project uses RAG" would have been the wrong
 instinct.
 
-**Qwen3-Embedding-0.6B for embeddings; a plain instruct model (`llama3.2`,
-no extended "thinking" mode) for chat, both via Ollama.**
+**Qwen3-Embedding-0.6B for embeddings, both via Ollama.**
 Right-sized for a ~3-document knowledge base - embedding-quality
 differences mostly matter when disambiguating many similar documents,
 which doesn't apply at this scale. Measured directly on this machine
@@ -105,14 +113,115 @@ similar size (`llama3.2`) took **27.1 sec** for the same question. The gap
 is about model *configuration*, not size - reasoning-mode defaults are a
 real, controllable latency cost.
 
-**One shared cached chat model, not a small "router" model + separate
-"generator" model.**
+**Chat model upgraded from `llama3.2` (3B) to `llama3.1:8b` after Phase 3
+testing revealed a real multi-hop tool-chaining failure, not a prompt
+problem.** `llama3.2` was the *original* choice purely for convenience -
+it was already pulled, small, and fast, so it let Phase 2's tool-building
+iterate quickly without a multi-GB download up front, and its single-call
+latency (27.1s) looked good next to a reasoning-mode model. `llama3.1:8b`
+was actually the model named in the very first project plan, before
+anything was built - it just wasn't pulled yet, so testing defaulted to
+whatever was convenient rather than what was originally intended. That
+gap only became visible once Phase 3 needed genuine multi-step tool
+orchestration, not single tool calls. Building the Phase 3 orchestrator
+(`create_agent`, native tool
+calling), `llama3.2` repeatedly recognized in its own generated text that
+a second tool call was needed (e.g. "I would like to run diagnosis_tool to
+determine the root cause...") but never actually issued that tool call -
+3 for 3 on the exact "why" query the system prompt explicitly instructed
+it to chain on. Strengthening the prompt to be much more forceful didn't
+fix this correctly - it overcorrected into calling `recommendation_tool`
+three redundant times for a question that never asked for
+recommendations. Swapping to `llama3.1:8b` - no prompt change at all -
+correctly chained `anomaly_detection_tool -> diagnosis_tool` on the first
+try, with a clean final answer. Conclusion: reliable multi-step tool
+orchestration is a capability that scales with model size here, not
+something prompt engineering alone can fully substitute for on a 3B
+model. Slower per call (121.3s for the 2-hop chain vs. `llama3.2`'s
+~27s/call), but correct on the first try beats fast-but-wrong, especially
+since `llama3.2`'s wrong turns (extra/redundant tool calls) were
+themselves burning comparable time anyway.
+
+**One shared cached chat model everywhere (`llama3.1:8b`), not a small
+"router" model + separate "generator" model, and not different models in
+different tool files.**
 A real production system might split cheap routing decisions onto a small
 fast model and reserve a larger model for generation. Deliberately not
 done here: on 16GB unified memory, keeping two different multi-GB models
 warm risks Ollama unloading one to fit the other, causing repeated
 cold-start reloads mid-conversation - worse than just being consistently
-one model.
+one model. This is also why the model upgrade above has to be applied in
+every file that constructs a `ChatOllama` (`diagnosis_tool.py`,
+`recommendation_tool.py`, `orchestrator.py`) - not just the orchestrator.
+
+**Known limitation, deliberately not fixed: the model can silently
+transcribe a number wrong when constructing a tool call - "unit 500"
+became `unit: 50`.** Found via the eval harness (`evals/orchestrator_evals.py`,
+case 8, `"unit 500 status"`), then reproduced and pinpointed directly by
+inspecting the raw message trace: `tool_calls: [{'name':
+'data_retrieval_tool', 'args': {'cycles': 'last 20', 'unit': 50}, ...}]`.
+Pydantic validated `50` as a perfectly good integer and passed it
+straight through - there was no schema violation, no parsing error,
+nothing to catch. `data_retrieval_tool` correctly returned real data for
+unit 50 (which genuinely exists), so the final answer was internally
+consistent and well-formed - it just silently answered the wrong
+question. This is a fundamentally different class of bug from anything
+else found in this project: every previous one had a real fix in our own
+code or prompt (a wrong parameter name, a leaked format token,
+insufficient chaining instructions). This one doesn't - the value itself
+was simply wrong, and every validation layer we have correctly assumes
+the value it receives is the one the user meant.
+
+One plausible (unverified) mechanism: every tool's docstring states unit
+numbers run "1-100 for the FD001 dataset" - it's possible the model's own
+learned expectation of the valid range nudged an out-of-range "500"
+toward something that fit it, rather than faithfully transcribing what
+was actually typed. LLM number-handling being unreliable in exactly this
+way is a documented general phenomenon, not something specific to this
+project's setup.
+
+Possible solutions considered, with why none were adopted here:
+1. **Self-verification / repeat-back before calling the tool** - have the
+   model restate its extracted parameters as a separate reasoning step
+   before the actual tool call, so a mismatch has a chance to surface.
+   *Tradeoff:* extra tokens and latency per call (same shape as the
+   Corrective RAG tradeoff), and does not actually guarantee correctness
+   - the same transcription error could just as easily occur in the
+   restated version, since the underlying weakness is reading the digits
+   correctly in the first place, not the number of times it's asked to.
+2. **Cross-check the tool's chosen number against digits present in the
+   raw user message** - flag a mismatch (a number in the tool call that
+   never appeared in what the user actually typed) for confirmation.
+   *Tradeoff:* reintroduces a hand-written parsing/matching layer over
+   the user's raw text - close to the `parse_query` regex approach this
+   project deliberately moved away from for tool arguments - and doesn't
+   generalize to legitimate cases with no literal digit in the current
+   message at all (e.g. a memory-based follow-up like "is that
+   abnormal?", which correctly relies on conversation history rather than
+   a number in the current message).
+3. **State the unit number explicitly at the start of the final answer**
+   (e.g. "Checking unit 50...") so a human reader has a fair chance to
+   notice a mismatch against their own question. *Tradeoff:* cheap (a
+   prompt instruction, no extra LLM calls), but doesn't prevent the error
+   - only makes it easier for a careful human to catch, and depends on
+   the model reliably following the instruction, which prior testing here
+   (the chaining-prompt experiments) showed isn't guaranteed.
+4. **A larger/more capable model** - the same lever that fixed the
+   multi-hop chaining failure earlier likely reduces this too, since
+   larger models are generally more faithful at copying exact tokens from
+   context. *Tradeoff:* the same one already documented for that
+   decision (latency, resource cost) - plus this failure mode isn't fully
+   eliminated by model size alone even at the frontier, only made less
+   frequent.
+5. **Document and accept, as done here** - zero implementation cost,
+   appropriate for this project's actual scope (a portfolio demo, not a
+   system steering real maintenance decisions), but a real correctness
+   gap in a setting where it would matter: if this pattern controlled
+   real fleet maintenance actions, silently inspecting/recommending
+   action on the wrong physical engine is a materially different kind of
+   mistake than "the demo answered slightly imprecisely" - worth being
+   honest that the stakes, not just the mechanism, are part of why this
+   would need solving properly before any real deployment.
 
 **`detect_anomalies`'s `"Top contributing sensors"` heuristic (largest
 |z-score| on one row) is an approximation, not true model attribution.**
@@ -130,6 +239,62 @@ contributing-sensor signal (`build_retrieval_query`) plus the
 query-instruction prefix Qwen3-Embedding's own model card recommends for
 queries specifically (not documents). Regression-tested in
 `test_diagnosis_tool.py`.
+
+**Known limitation, deliberately not fixed: `retrieve_fault_context`
+always returns its top-k, with no confidence check on whether they're
+actually a good match.** Verified directly: fed it a deliberately
+nonsense report (a single near-constant operational setting, no real
+fault signal), and it still confidently returned a ranked top-3 with
+real-looking distance scores (best: 0.9093) - in the *same numeric range*
+as the genuinely good matches found for real anomalies (0.77-0.80 for
+fan/HPC degradation earlier). A similarity-score threshold does not
+solve this: there is no cutoff that reliably separates "real match" from
+"no real match" here, since a nonsense query and a real one land in the
+same numeric neighborhood. Consequence: our knowledge base only covers 3
+fault types (FD001's actual HPC degradation, plus fan degradation and
+generic sensor noise for retrieval to discriminate against). Any anomaly
+that is genuinely none of these three would still get silently matched to
+whichever is least-dissimilar, handed to the LLM as if it were solid
+reference material, with no signal the match was actually weak.
+
+The real fix is a different mechanism, not a better number: **Corrective
+RAG** - grade each retrieved candidate with the LLM itself before trusting
+it, since relevance is a judgment call the LLM is better suited for than
+a raw vector distance.
+
+```
+current (implemented):
+  anomaly report -> embed -> FAISS top-k -> stuff into prompt -> diagnosis
+                                             (top-k trusted blindly)
+
+corrective RAG (designed, not implemented):
+  anomaly report -> embed -> FAISS top-k -> grade each candidate (LLM)
+                                                    |
+                                     any graded relevant?
+                                      /                  \
+                                   yes                    no
+                                    |                      |
+                           use only relevant ones   "no confident match -
+                           -> diagnosis (grounded)   escalate for review"
+```
+
+**Why this stayed a design, not code: the tradeoff was decided explicitly,
+not skipped by accident.** Grading adds one more LLM call to the
+diagnosis chain - given the latency already measured for this hardware,
+that roughly *doubles* this step's cost for every single diagnosis
+request, not just the rare bad-match case. Given the actual scope here
+(FD001, one real fault mode, a 3-entry knowledge base built to
+demonstrate the pattern rather than cover a production fault taxonomy),
+that cost wasn't justified. Instead, top-k retrieval quality was verified
+manually across the realistic queries this project actually exercises
+(fan-like and HPC-like anomaly reports - see the retrieval-fix entry
+above) and found acceptable *for this scenario*. This is the right
+tradeoff to name explicitly in review, not the right tradeoff to leave
+unstated: correctness safety net vs. doubled latency, decided in favor of
+latency here because the failure mode (a genuinely novel, unrepresented
+fault type) is rare at this project's actual scope - it would flip the
+other way for a knowledge base large enough that "is this really a good
+match" stops being something a human can spot-check by hand.
 
 **Mock the LLM in tests; never call the real model in the default test
 run.**
