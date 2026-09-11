@@ -8,3 +8,6 @@ langchain-ollama
 langchain-community
 faiss-cpu
 langchain
+langgraph
+streamlit
+plotly
