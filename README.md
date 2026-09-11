@@ -48,7 +48,7 @@ built. The full reasoning behind every non-obvious choice below is in
 |---|---|---|
 | 1 | Data pipeline (`data_loader.py`) + Isolation Forest anomaly scorer (`anomaly_detector.py`) | ✅ Done, tested |
 | 2 | Four LangChain tools (retrieval, anomaly detection, diagnosis w/ RAG, recommendation) | ✅ Done, tested |
-| 3 | Orchestrator agent (ReAct + memory) routing between the four tools | ⏳ Not started |
+| 3 | Orchestrator agent (`create_agent`, native tool calling, threaded memory) routing between the four tools | ✅ Done, validated (`evals/orchestrator_evals.py`) |
 | 4 | Streamlit UI (chat + sensor charts) | ⏳ Not started |
 
 ## Dataset
@@ -86,10 +86,11 @@ change, not a rewrite.
 |---|---|---|
 | Data handling | pandas, NumPy | — |
 | Anomaly detection | scikit-learn `IsolationForest` | Unsupervised — no per-row fault labels exist in the data |
-| Agent framework | LangChain (`langchain-core`) | `@tool` decorator, ReAct agent |
-| Chat LLM | Ollama, `llama3.2` (no extended "thinking" mode) | Free, local, measured faster than reasoning-mode alternatives on this hardware |
+| Agent framework | LangChain `create_agent` (built on LangGraph) | Native tool calling + threaded conversation memory via a checkpointer - not the older `AgentExecutor`/`initialize_agent` APIs, which are deprecated |
+| Chat LLM | Ollama, `llama3.1:8b` (no extended "thinking" mode) | Upgraded from `llama3.2` after it failed multi-hop tool chaining 3/3 in testing - see `docs/DECISIONS.md` |
 | Embeddings | Ollama, `qwen3-embedding:0.6b` | Right-sized for a ~3-document knowledge base |
 | Vector store | FAISS (`langchain-community`) | Semantic retrieval for the Diagnosis tool's RAG step |
+| Conversation memory | LangGraph `InMemorySaver`, keyed by `thread_id` | In-process, per-session - a real deployment would need a persistent checkpointer instead |
 | Frontend (Phase 4) | Streamlit | Not yet built |
 | Testing | pytest, with `monkeypatch`-based LLM mocking | Fast default suite; real end-to-end LLM tests marked `slow` |
 
@@ -101,7 +102,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Pull the local models this project uses
-ollama pull llama3.2
+ollama pull llama3.1:8b
 ollama pull qwen3-embedding:0.6b
 
 # Place the CMAPSS FD001 files under data/raw/ (see Dataset, above)
@@ -110,15 +111,21 @@ ollama pull qwen3-embedding:0.6b
 ## Testing
 
 ```bash
-pytest            # fast suite: 54 tests, ~13s, no LLM calls
+pytest            # fast suite: 50 tests, ~5s, no LLM calls
 pytest -m slow    # 2 real end-to-end tests that call the actual LLM, ~1-2 min
 ```
 
-56 tests total across the Phase 1 modules and all four Phase 2 tools.
+52 tests total across the Phase 1 modules and all four Phase 2 tools.
 LLM calls are mocked in the default suite (`FakeChatModel` /
 `RaisingChatModel` in `tests/conftest.py`) so it runs in seconds and needs
 no running Ollama server — the 2 tests that do call the real model are
 opt-in via the `slow` marker (`pytest.ini`).
+
+Phase 3's orchestrator has a separate, deliberately non-pytest **eval
+harness** instead (`evals/orchestrator_evals.py`) — a real local model
+making autonomous tool-routing decisions isn't a deterministic
+pass/fail question the way the rest of this suite is. See
+`docs/DECISIONS.md` for why that distinction matters and what it found.
 
 ## Latency, cost & scaling
 
@@ -155,15 +162,19 @@ config/domain.yaml        # domain vocabulary, sensor exclusions, fault knowledg
 data/raw/                 # CMAPSS files (not committed - see Dataset)
 docs/
   DECISIONS.md            # engineering decisions log, with reasoning
+evals/
+  orchestrator_evals.py   # Phase 3 routing eval harness (not pytest - see Testing, below)
+  results/                # timestamped CSV output per eval run
 src/
   data_loader.py           # ingest, clean, normalize (Phase 1)
   anomaly_detector.py       # Isolation Forest scoring (Phase 1)
+  orchestrator.py           # Phase 3: create_agent, system prompt, memory, interactive demo
   tools/
     data_retrieval_tool.py     # sensor summary stats
     anomaly_detection_tool.py  # anomaly scoring, tool-facing
     diagnosis_tool.py          # RAG root-cause diagnosis
     recommendation_tool.py     # corrective action recommendations
-tests/                    # 56 tests (54 fast, 2 slow/real-LLM)
+tests/                    # 52 tests (50 fast, 2 slow/real-LLM)
 requirements.txt
 pytest.ini
 ```
